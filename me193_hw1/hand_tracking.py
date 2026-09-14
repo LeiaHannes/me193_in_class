@@ -165,33 +165,44 @@ while cap.isOpened():
         doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_RIGHT, speed=0)
         break
 
-    # defaults if no hands detected
+        # defaults if no hands detected
     target_yaw = 0
     speed = 0
+    left_hand_open = False
+    LEFT_HAND_OPEN_THRESHOLD = 70  # tune this based on printed openness values
 
     for hand in positions:
         if hand['label'] == 'Right':
             target_yaw = hand['y']
             speed = hand['openness']  # right hand openness now drives speed
+        elif hand['label'] == 'Left':
+            if hand['openness'] > LEFT_HAND_OPEN_THRESHOLD:
+                left_hand_open = True
 
-    for i in range(5):
-        yaw = doublemotor.imu_device.yaw
-        error = target_yaw - yaw
-        error = kp * error + kd * (error - current_error) + ki * cumulative_error
-        current_error = error
-        cumulative_error += error
-        print(f"Target Yaw: {target_yaw}, Current Yaw: {yaw}, Error: {error}, Speed: {speed}")
+    
+    else:
+        for i in range(5):
+            yaw = doublemotor.imu_device.yaw
+            error = target_yaw - yaw
+            error = kp * error + kd * (error - current_error) + ki * cumulative_error
+            current_error = error
+            cumulative_error += error
+            print(f"Target Yaw: {target_yaw}, Current Yaw: {yaw}, Error: {error}, Speed: {speed}")
 
-        if speed == 0:
-            speed_left = 0
-            speed_right = 0
-        else:
-            speed_left = clamp(speed - error)
-            speed_right = clamp(speed + error)
+            if speed == 0:
+                speed_left = 0
+                speed_right = 0
+            else:
+                speed_left = clamp(speed - error)
+                speed_right = clamp(speed + error)
 
-        doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_COUNTERCLOCKWISE, motor=le.MOTOR_LEFT, speed=speed_left)
-        doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_RIGHT, speed=speed_right)
-        time.sleep(0.001)
+            if left_hand_open:
+                doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_LEFT, speed=speed_right)
+                doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_COUNTERCLOCKWISE, motor=le.MOTOR_RIGHT, speed=speed_left)
+            else:
+                doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_COUNTERCLOCKWISE, motor=le.MOTOR_LEFT, speed=speed_left)
+                doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_RIGHT, speed=speed_right)
+            time.sleep(0.001)
 
 
 cap.release()
