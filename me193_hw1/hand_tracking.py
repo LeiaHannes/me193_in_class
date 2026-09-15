@@ -9,6 +9,10 @@ import legoeducation as le
 
 MODEL_PATH = "hand_landmarker.task"
 
+# Set to True to print per-frame hand positions and PID debug info.
+# Keep False for normal runs - printing every frame slows down the loop.
+VERBOSE_PRINT = False
+
 # connect to the Double Motor
 card_color = le.LEGO_COLOR_AZURE
 card_serial = '0997'
@@ -23,6 +27,14 @@ if not doublemotor.connected:
 
 # Reset yaw to 0 at startup so readings are relative to this orientation
 doublemotor.imu_reset_yaw_axis(0)
+
+# Loop timing accumulators (summarized once at the end, not printed per-frame)
+outer_loop_last_time = time.time()
+inner_loop_last_time = time.time()
+outer_dt_sum = 0.0
+outer_dt_count = 0
+inner_dt_sum = 0.0
+inner_dt_count = 0
 
 # control vars
 kp = 0.04
@@ -125,6 +137,14 @@ def draw_landmarks(frame, result):
 start_time = time.time()
 
 while cap.isOpened():
+    # timing (accumulated only, no per-frame print)
+    now = time.time()
+    outer_dt = now - outer_loop_last_time
+    outer_loop_last_time = now
+    if outer_dt > 0:
+        outer_dt_sum += outer_dt
+        outer_dt_count += 1
+
     success, frame = cap.read()
     if not success:
         break
@@ -140,9 +160,9 @@ while cap.isOpened():
     h, w, _ = frame.shape
     positions = get_hand_positions(result, w, h)
 
-    # Print positions to console
-    for hand in positions:
-        print(f"{hand['label']} hand: x={hand['x']}, y={hand['y']}, openness={hand['openness']}, time={timestamp_ms}")
+    if VERBOSE_PRINT:
+        for hand in positions:
+            print(f"{hand['label']} hand: x={hand['x']}, y={hand['y']}, openness={hand['openness']}, time={timestamp_ms}")
 
     # Draw landmarks + text on the frame for visual feedback
     draw_landmarks(frame, result)
@@ -165,7 +185,7 @@ while cap.isOpened():
         doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_RIGHT, speed=0)
         break
 
-        # defaults if no hands detected
+    # defaults if no hands detected
     target_yaw = 0
     speed = 0
     left_hand_open = False
@@ -179,33 +199,47 @@ while cap.isOpened():
             if hand['openness'] > LEFT_HAND_OPEN_THRESHOLD:
                 left_hand_open = True
 
-    
-    else:
-        for i in range(5):
-            yaw = doublemotor.imu_device.yaw
-            error = target_yaw - yaw
-            error = kp * error + kd * (error - current_error) + ki * cumulative_error
-            current_error = error
-            cumulative_error += error
+    for i in range(5):
+        yaw = doublemotor.imu_device.yaw
+        error = target_yaw - yaw
+        error = kp * error + kd * (error - current_error) + ki * cumulative_error
+        current_error = error
+        cumulative_error += error
+
+        if VERBOSE_PRINT:
             print(f"Target Yaw: {target_yaw}, Current Yaw: {yaw}, Error: {error}, Speed: {speed}")
 
-            if speed == 0:
-                speed_left = 0
-                speed_right = 0
-            else:
-                speed_left = clamp(speed - error)
-                speed_right = clamp(speed + error)
+        if speed == 0:
+            speed_left = 0
+            speed_right = 0
+        else:
+            speed_left = clamp(speed - error)
+            speed_right = clamp(speed + error)
 
-            if left_hand_open:
-                doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_LEFT, speed=speed_right)
-                doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_COUNTERCLOCKWISE, motor=le.MOTOR_RIGHT, speed=speed_left)
-            else:
-                doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_COUNTERCLOCKWISE, motor=le.MOTOR_LEFT, speed=speed_left)
-                doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_RIGHT, speed=speed_right)
-            time.sleep(0.001)
+        if left_hand_open:
+            doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_LEFT, speed=speed_right)
+            doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_COUNTERCLOCKWISE, motor=le.MOTOR_RIGHT, speed=speed_left)
+        else:
+            doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_COUNTERCLOCKWISE, motor=le.MOTOR_LEFT, speed=speed_left)
+            doublemotor.motor_run(direction=le.MOTOR_MOVE_DIRECTION_CLOCKWISE, motor=le.MOTOR_RIGHT, speed=speed_right)
+
+        now = time.time()
+        inner_dt = now - inner_loop_last_time
+        inner_loop_last_time = now
+        if inner_dt > 0:
+            inner_dt_sum += inner_dt
+            inner_dt_count += 1
+
+        time.sleep(0.001)
 
 
 cap.release()
 cv2.destroyAllWindows()
-doublemotor.stop()
+doublemotor.motor_stop()
 doublemotor.disconnect()
+
+# Single summary print at the end, instead of printing every frame
+avg_outer_hz = (outer_dt_count / outer_dt_sum) if outer_dt_sum > 0 else 0
+avg_inner_hz = (inner_dt_count / inner_dt_sum) if inner_dt_sum > 0 else 0
+print(f"Average camera loop rate: {avg_outer_hz:.1f} Hz over {outer_dt_count} frames")
+print(f"Average motor control rate: {avg_inner_hz:.1f} Hz over {inner_dt_count} iterations")
